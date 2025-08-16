@@ -1,1 +1,20 @@
+# Streamlit & secrets
+.streamlit/secrets.toml
 .streamlit/
+*.json 
+kawaii-co-sales-634f5af5c4b1.json
+kawaii-co-sales-1816c1bb224f.json
+# --- Python cache/venv ---
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+
+# --- Local environment files ---
+.env
+*.env
+
+# --- OS-specific ---
+.DS_Store
+Thumbs.db
