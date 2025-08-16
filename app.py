@@ -1,16 +1,22 @@
-import os, json, re
+# --- Standard library
+import os
+import json
+import re
 from datetime import datetime
+
+# --- Third-party
+import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 import gspread
 from google.oauth2 import service_account
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from streamlit import column_config as cc
+
+# Plotly (no duplicates)
 import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-import numpy as np
 
 
 # =========================
