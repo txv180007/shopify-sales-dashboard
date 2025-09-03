@@ -210,6 +210,20 @@ def contains_any(series: pd.Series, needles: list[str]) -> pd.Series:
         cond |= s.str.contains(re.escape(n), na=False)
     return cond
 
+
+# --- Helper: Split a user string into search terms (comma or whitespace separated) ---
+def parse_terms(text: str) -> list[str]:
+    """
+    Split a user string into search terms.
+    Accepts comma or whitespace separation; trims empties.
+    """
+    if not text:
+        return []
+    raw = []
+    for chunk in str(text).split(","):
+        raw.extend(chunk.strip().split())
+    return [t for t in (s.strip() for s in raw) if t]
+
 # =========================
 # Load data
 # =========================
@@ -293,59 +307,50 @@ def delete_preset(name: str):
             break
     list_presets.clear()
 
-# --- Helper: Apply a preset to session state (non-destructive and reusable) ---
 def apply_preset_to_session(fdef: dict, negate: bool = False, combine_mode: str = "OR"):
     """
-    Apply a preset's filters into session state.
-    - When negate=True, stores filters into the negative keys and clears overlapping positives.
-    - combine_mode controls how lists merge with existing values when not negated ("OR" union / "AND" intersection).
+    Apply preset into a unified 'contains_terms' textbox that targets Title & Barcode.
+    - When negate=True: stores into negative keys and clears positives.
     """
     def _sanitize_list(x):
         return [s for s in (str(v).strip() for v in (x or [])) if s]
 
     titles   = _sanitize_list(fdef.get("title_contains",  []))
     barcodes = _sanitize_list(fdef.get("barcode_contains",[]))
-    picks    = _sanitize_list(fdef.get("pick_titles",     []))
-    q        = (fdef.get("query","") or "").strip()
-
+    merged_terms = sorted(set(titles) | set(barcodes))
 
     if negate:
-        st.session_state["neg_title_contains"]   = titles
-        st.session_state["neg_barcode_contains"] = barcodes
-        st.session_state["neg_pick_titles"]      = picks
-        # Clear positives for intuitive exclusion behavior
-        st.session_state["t_contains"] = ""
-        st.session_state["b_contains"] = ""
-        st.session_state["pick_titles"] = []
+        st.session_state["neg_contains_terms"] = merged_terms
+        st.session_state["contains_terms"] = ""
     else:
-        # Merge with existing positives
-        def _merge(curr, add):
-            curr_set = set([s.strip() for s in (curr or "").split(",") if s.strip()]) if isinstance(curr, str) else set(curr or [])
-            add_set  = set(add or [])
-            if combine_mode == "AND" and curr_set:
-                return list(curr_set & add_set)
-            # default OR
-            return sorted(curr_set | add_set)
+        curr = parse_terms(st.session_state.get("contains_terms",""))
+        if combine_mode == "AND" and curr:
+            merged = sorted(set(curr) & set(merged_terms))
+        else:
+            merged = sorted(set(curr) | set(merged_terms))
+        st.session_state["contains_terms"] = ", ".join(merged)
+        st.session_state.pop("neg_contains_terms", None)
 
-        st.session_state["t_contains"] = ",".join(_merge(st.session_state.get("t_contains",""), titles)).strip(",")
-        st.session_state["b_contains"] = ",".join(_merge(st.session_state.get("b_contains",""), barcodes)).strip(",")
-        st.session_state["pick_titles"] = sorted(_merge(st.session_state.get("pick_titles", []), picks))
+    # Clear legacy keys that could interfere
+    for k in [
+        "q","t_contains","b_contains",
+        "neg_title_contains","neg_barcode_contains","neg_pick_titles"
+    ]:
+        st.session_state.pop(k, None)
 
-        # Clear negatives when applying a positive preset
-        st.session_state.pop("neg_title_contains", None)
-        st.session_state.pop("neg_barcode_contains", None)
-        st.session_state.pop("neg_pick_titles", None)
-
-    # Merge query
+    # Optionally merge any free-text query into the unified terms
+    q = (fdef.get("query","") or "").strip()
     if q:
-        q0 = st.session_state.get("q","")
-        st.session_state["q"] = (" ".join([q0, q])).strip()
+        st.session_state["contains_terms"] = ", ".join(
+            sorted(set(parse_terms(st.session_state.get("contains_terms","")) + parse_terms(q)))
+        )
 
 # =========================
 # Global filters (sidebar) + presets + custom groups
 # =========================
 def apply_global_filters(df: pd.DataFrame):
     min_d, max_d = df["dateYMD"].min(), df["dateYMD"].max()
+    eff_start, eff_end = pd.to_datetime(min_d), pd.to_datetime(max_d)
     with st.sidebar:
         st.header("Filters")
 
@@ -363,16 +368,15 @@ def apply_global_filters(df: pd.DataFrame):
         if isinstance(date_range, tuple) and len(date_range)==2:
             st.session_state["__preset_dates__"] = date_range
 
-        # Search box limited to Title/Barcode
-        q = st.text_input("Search (Title / Barcode)", value=st.session_state.get("q",""), key="flt_search").strip().lower()
-        st.session_state["q"] = q
-
-        # Custom groups (contains…)
-        st.markdown("### Custom Groups")
-        t_contains = st.text_input("Title contains (comma-sep)", value=st.session_state.get("t_contains",""), key="flt_t_contains")
-        b_contains = st.text_input("Barcode contains (comma-sep)", value=st.session_state.get("b_contains",""), key="flt_b_contains")
-        st.session_state["t_contains"] = t_contains
-        st.session_state["b_contains"] = b_contains
+        # Unified contains textbox (applies to Title AND Barcode)
+        contains_terms = st.text_input(
+            "Title or Barcode contains (comma-separated)",
+            value=st.session_state.get("contains_terms",""),
+            key="flt_contains_terms",
+            placeholder="e.g. sonny, hipper, 0123456789"
+        )
+        st.session_state["contains_terms"] = contains_terms
+        st.caption("Matches any of the terms in **Title** or **Barcode**. Separate with commas or spaces.")
 
         # Has image tri-state
         has_img_choice = st.selectbox(
@@ -426,59 +430,29 @@ def apply_global_filters(df: pd.DataFrame):
             if not selected:
                 st.warning("Pick at least one preset.")
             else:
-                title_lists, barcode_lists, picks_titles = [], [], []
-                queries = []
-
+                # collect all terms from title/barcode across presets
+                buckets = []
                 for p in selected:
                     fdef = p["filters"]
-                    queries.append(fdef.get("query",""))
-                    title_lists.append(fdef.get("title_contains", []))
-                    barcode_lists.append(fdef.get("barcode_contains", []))
-                    picks_titles.append(fdef.get("pick_titles", []))
-
-                def _combine(list_of_lists, mode="OR"):
-                    sets = [set(x) for x in list_of_lists if x]
-                    if not sets:
-                        return []
-                    if mode == "AND":
-                        s = sets[0].copy()
-                        for z in sets[1:]:
-                            s &= z
-                        return sorted(s)
+                    buckets.append([str(x).strip() for x in (fdef.get("title_contains", []) or []) if str(x).strip()])
+                    buckets.append([str(x).strip() for x in (fdef.get("barcode_contains", []) or []) if str(x).strip()])
+                # combine per mode
+                sets = [set(b) for b in buckets if b]
+                if sets:
+                    if combine_mode == "AND":
+                        merged = sorted(list(set.intersection(*sets))) if len(sets) > 1 else sorted(list(sets[0]))
                     else:
-                        s = set()
-                        for z in sets:
-                            s |= z
-                        return sorted(s)
-
-                def _sanitize(lst):
-                    return [s for s in (str(x).strip() for x in (lst or [])) if s]
-
-                merged_titles   = _sanitize(_combine(title_lists,   combine_mode))
-                merged_barcodes = _sanitize(_combine(barcode_lists, combine_mode))
-                merged_picks    = _sanitize(_combine(picks_titles,  combine_mode))
+                        merged = sorted(list(set.union(*sets)))
+                else:
+                    merged = []
 
                 if negate_apply:
-                    # Store negatives and clear positives to avoid intersecting with prior positive filters
-                    st.session_state["neg_title_contains"]   = merged_titles
-                    st.session_state["neg_barcode_contains"] = merged_barcodes
-                    st.session_state["neg_pick_titles"]      = merged_picks
-
-                    # Clear conflicting positive filters so exclusion behaves intuitively
-                    st.session_state["t_contains"] = ""
-                    st.session_state["b_contains"] = ""
-                    st.session_state["pick_titles"] = []
+                    st.session_state["neg_contains_terms"] = merged
+                    st.session_state["contains_terms"] = ""
                 else:
-                    st.session_state["t_contains"] = ",".join(sorted(set(st.session_state.get("t_contains","").split(",")) | set(merged_titles))).strip(",")
-                    st.session_state["b_contains"] = ",".join(sorted(set(st.session_state.get("b_contains","").split(",")) | set(merged_barcodes))).strip(",")
-                    st.session_state["pick_titles"] = sorted(set(st.session_state.get("pick_titles", [])) | set(merged_picks))
-                    st.session_state.pop("neg_title_contains", None)
-                    st.session_state.pop("neg_barcode_contains", None)
-                    st.session_state.pop("neg_pick_titles", None)
-
-                q0 = st.session_state.get("q","")
-                q_new = " ".join([q0] + [q for q in queries if q]).strip()
-                st.session_state["q"] = q_new
+                    curr = parse_terms(st.session_state.get("contains_terms",""))
+                    st.session_state["contains_terms"] = ", ".join(sorted(set(curr) | set(merged)))
+                    st.session_state.pop("neg_contains_terms", None)
 
                 st.success(f"Applied {len(chosen_many)} preset(s) with {combine_mode}{' (negated)' if negate_apply else ''}.")
                 st.rerun()
@@ -504,10 +478,11 @@ def apply_global_filters(df: pd.DataFrame):
 
         if st.button("Save current filters as preset", key="presets_save_btn", use_container_width=True):
             if preset_name.strip():
+                terms = parse_terms(st.session_state.get("contains_terms",""))
                 fdef = {
-                    "query": st.session_state.get("q",""),
-                    "title_contains":  [s.strip() for s in st.session_state.get("t_contains","").split(",") if s.strip()],
-                    "barcode_contains":[s.strip() for s in st.session_state.get("b_contains","").split(",") if s.strip()],
+                    "query": "",  # keep empty; unified box holds the terms
+                    "title_contains": terms,
+                    "barcode_contains": terms,
                     "has_image": st.session_state.get("has_img_choice","Both"),
                     "pick_titles": st.session_state.get("pick_titles", []),
                 }
@@ -518,66 +493,110 @@ def apply_global_filters(df: pd.DataFrame):
 
         if st.button("Clear filters", key="flt_clear", use_container_width=True):
             for k in [
-                "q","t_contains","b_contains","has_img_choice","pick_titles",
-                "__preset_dates__","__new_preset_name__","compact",
-                "neg_title_contains","neg_barcode_contains","neg_pick_titles"
+                "contains_terms","neg_contains_terms",
+                "has_img_choice","pick_titles",
+                "__preset_dates__","__new_preset_name__","compact"
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
 
     # Build mask once
     mask = pd.Series(True, index=df.index)
+    # --- Robust date filtering: clamp to available data window ---
     if isinstance(date_range, tuple) and len(date_range) == 2:
-        start, end = [pd.to_datetime(d) for d in date_range]
-        mask &= df["dateYMD"].between(start, end)
+        try:
+            start, end = [pd.to_datetime(d, errors="coerce") for d in date_range]
+        except Exception:
+            start, end = None, None
 
-    if q:
-        mask &= (
-            df.get("title","").astype(str).str.lower().str.contains(q, na=False) |
-            df.get("barcode","").astype(str).str.lower().str.contains(q, na=False)
-        )
+        data_min = pd.to_datetime(df["dateYMD"].min())
+        data_max = pd.to_datetime(df["dateYMD"].max())
 
-    # Positives: Custom contains (OR within field; AND across fields)
-    t_needles = [s.strip() for s in st.session_state.get("t_contains","").split(",") if s.strip()]
-    b_needles = [s.strip() for s in st.session_state.get("b_contains","").split(",") if s.strip()]
+        if pd.isna(start) or pd.isna(end):
+            # Invalid widget dates → keep all data and use dataset span as effective period
+            st.caption("Date range invalid — showing all available data.")
+            eff_start, eff_end = data_min, data_max
+        else:
+            start = start.normalize()
+            end   = end.normalize()
 
-    if t_needles:
-        mask &= contains_any(df.get("title",""), t_needles)
-    if b_needles:
-        mask &= contains_any(df.get("barcode",""), b_needles)
+            if pd.notna(data_min) and pd.notna(data_max):
+                overlap_start = max(start, data_min)
+                overlap_end   = min(end,   data_max)
+                if overlap_start > overlap_end:
+                    # No overlap: keep mask empty, but still expose the selected period (for display)
+                    st.info(
+                        f"No data exists in your selected range {start.date()} → {end.date()}. "
+                        f"Available data spans {data_min.date()} → {data_max.date()}."
+                    )
+                    mask &= pd.Series(False, index=df.index)
+                    eff_start, eff_end = overlap_start, overlap_end
+                else:
+                    # There is overlap; clamp to it and expose effective period
+                    if (overlap_start != start) or (overlap_end != end):
+                        st.caption(f"Clamped to available data: {overlap_start.date()} → {overlap_end.date()}.")
+                    mask &= df["dateYMD"].between(overlap_start, overlap_end)
+                    eff_start, eff_end = overlap_start, overlap_end
+            else:
+                # No date info in data
+                st.caption("No date column available; skipping date filter.")
+                eff_start, eff_end = None, None
+
+    # Unified positive contains (Title OR Barcode) + active chip terms
+    manual_terms = parse_terms(st.session_state.get("contains_terms",""))
+    chip_maps = st.session_state.get("chip_terms_map", {})
+    chip_terms_all = sorted(set().union(*chip_maps.values())) if chip_maps else []
+    terms = sorted(set(manual_terms) | set(chip_terms_all))
+    if terms:
+        cond_title   = contains_any(df.get("title",""), terms)
+        cond_barcode = contains_any(df.get("barcode",""), terms)
+        mask &= (cond_title | cond_barcode)
+
+    # Unified negative contains (exclude)
+    neg_terms = st.session_state.get("neg_contains_terms", [])
+    if neg_terms:
+        ex_title   = contains_any(df.get("title",""), neg_terms)
+        ex_barcode = contains_any(df.get("barcode",""), neg_terms)
+        mask &= ~(ex_title | ex_barcode)
 
     # Has image tri-state
+    pick_titles = st.session_state.get("pick_titles", [])
+    choice = st.session_state.get("has_img_choice","Both")
     if "hasImage" in df.columns:
-        choice = st.session_state.get("has_img_choice","Both")
         if choice == "Has image":
             mask &= df["hasImage"] == True
         elif choice == "No image":
             mask &= (df["hasImage"] == False) | df["hasImage"].isna()
 
-    # Click-to-filter (from top table)
-    pick_titles = st.session_state.get("pick_titles", [])
+    # Click-to-filter titles from Top table
     if pick_titles:
         mask &= df["title"].astype(str).isin(pick_titles)
 
-    # Negative (exclude) presets: union-of-negatives then subtract
-    neg_titles   = [s for s in (st.session_state.get("neg_title_contains", []) or []) if str(s).strip()]
-    neg_barcodes = [s for s in (st.session_state.get("neg_barcode_contains", []) or []) if str(s).strip()]
-    neg_picks    = [s for s in (st.session_state.get("neg_pick_titles", []) or []) if str(s).strip()]
-
-    if neg_titles or neg_barcodes or neg_picks:
-        exclude = pd.Series(False, index=df.index)
-        if neg_titles:
-            exclude |= contains_any(df.get("title",""), neg_titles)
-        if neg_barcodes:
-            exclude |= contains_any(df.get("barcode",""), neg_barcodes)
-        if neg_picks:
-            exclude |= df["title"].astype(str).isin([str(x) for x in neg_picks])
-        mask &= ~exclude
-
     f = df[mask].copy()
-    return f, pick_titles, st.session_state.get("compact", True)
+    return f, pick_titles, st.session_state.get("compact", True), (eff_start, eff_end)
 
-f, pick_titles, compact = apply_global_filters(df)
+f, pick_titles, compact, report_period = apply_global_filters(df)
+
+# ---- Report period banner (always visible) ----
+def _fmt_date(x):
+    if x is None or pd.isna(x):
+        return "—"
+    try:
+        return pd.to_datetime(x).strftime("%b %d, %Y")
+    except Exception:
+        return "—"
+
+rp_start, rp_end = report_period if isinstance(report_period, tuple) else (None, None)
+if rp_start is not None and rp_end is not None and pd.notna(rp_start) and pd.notna(rp_end):
+    if pd.to_datetime(rp_start).date() == pd.to_datetime(rp_end).date():
+        st.markdown(f"**Report Date:** {_fmt_date(rp_start)}")
+    else:
+        st.markdown(f"**Report Period:** {_fmt_date(rp_start)} → {_fmt_date(rp_end)}")
+else:
+    # Fall back to dataset span if unknown
+    dmin, dmax = pd.to_datetime(df['dateYMD'].min()), pd.to_datetime(df['dateYMD'].max())
+    st.markdown(f"**Report Period:** {_fmt_date(dmin)} → {_fmt_date(dmax)}")
+
 if f.empty:
     st.warning("No rows match your filters.")
     st.stop()
@@ -768,7 +787,7 @@ def compute_stale_metrics(
 
 
 # =========================
-# Quick Preset Chips (fast apply)
+# Quick Preset Chips (toggleable)
 # =========================
 presets_all = list_presets()
 # Order: favorites first (name begins with '*'), then alphabetically
@@ -776,23 +795,51 @@ fav = [p for p in presets_all if str(p["name"]).strip().startswith("*")]
 regular = [p for p in presets_all if p not in fav]
 chips = (fav + regular)[:12]
 
+# Hold which chips are ON and which terms each chip contributes
+if "active_chips" not in st.session_state:
+    st.session_state["active_chips"] = []          # list[str] of preset names
+if "chip_terms_map" not in st.session_state:
+    st.session_state["chip_terms_map"] = {}        # name -> list[str] contributed terms
+
+def _terms_from_preset_filters(fdef: dict) -> list[str]:
+    t = [str(x).strip() for x in (fdef.get("title_contains", []) or []) if str(x).strip()]
+    b = [str(x).strip() for x in (fdef.get("barcode_contains", []) or []) if str(x).strip()]
+    return sorted(set(t) | set(b))
+
 if chips:
     st.markdown("<div class='sticky-chipbar'>", unsafe_allow_html=True)
     cols = st.columns(len(chips) + 1)
     for i, p in enumerate(chips):
-        label = p["name"]
+        name = p["name"]
+        fdef = p["filters"]
+        terms_for_chip = _terms_from_preset_filters(fdef)
+        active = name in st.session_state["active_chips"]
+        label = f"✓ {name}" if active else name
+        help_txt = "Click to disable" if active else "Click to enable"
+
         with cols[i]:
-            st.button(label, key=f"chip_{i}", help="Apply preset", use_container_width=False)
-            if st.session_state.get(f"chip_{i}"):
-                apply_preset_to_session(p["filters"], negate=False, combine_mode="OR")
+            if st.button(label, key=f"chip_{i}", help=help_txt, use_container_width=False):
+                if active:
+                    # Turn OFF
+                    try:
+                        st.session_state["active_chips"].remove(name)
+                    except ValueError:
+                        pass
+                    st.session_state["chip_terms_map"].pop(name, None)
+                else:
+                    # Turn ON
+                    st.session_state["active_chips"].append(name)
+                    st.session_state["chip_terms_map"][name] = terms_for_chip
                 st.rerun()
-    # Clear Filters pill
+
+    # Clear filters pill also resets chip state
     with cols[-1]:
         if st.button("Clear filters", key="chip_clear", help="Reset all filters", use_container_width=False):
             for k in [
-                "q","t_contains","b_contains","has_img_choice","pick_titles",
+                "contains_terms","neg_contains_terms",
+                "has_img_choice","pick_titles",
                 "__preset_dates__","__new_preset_name__","compact",
-                "neg_title_contains","neg_barcode_contains","neg_pick_titles"
+                "active_chips","chip_terms_map"
             ]:
                 st.session_state.pop(k, None)
             st.rerun()
