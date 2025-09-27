@@ -16,18 +16,37 @@ def get_google_client():
     """Initialize and return Google Sheets client."""
     config = get_spreadsheet_config()
 
-    # Try base64 encoded JSON format (most reliable for Streamlit Cloud)
-    if "GOOGLE_SERVICE_ACCOUNT_B64" in st.secrets:
-        sa_b64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_B64"]
-        sa_json = base64.b64decode(sa_b64).decode('utf-8')
+    # Try split JSON variables format
+    if all(key in st.secrets for key in ["GCP_TYPE", "GCP_PROJECT_ID", "GCP_PRIVATE_KEY", "GCP_CLIENT_EMAIL"]):
+        service_account_info = {
+            "type": st.secrets["GCP_TYPE"],
+            "project_id": st.secrets["GCP_PROJECT_ID"],
+            "private_key_id": st.secrets["GCP_PRIVATE_KEY_ID"],
+            "private_key": st.secrets["GCP_PRIVATE_KEY"].replace("\\n", "\n"),
+            "client_email": st.secrets["GCP_CLIENT_EMAIL"],
+            "client_id": st.secrets["GCP_CLIENT_ID"],
+            "auth_uri": st.secrets["GCP_AUTH_URI"],
+            "token_uri": st.secrets["GCP_TOKEN_URI"],
+            "auth_provider_x509_cert_url": st.secrets["GCP_AUTH_PROVIDER_X509_CERT_URL"],
+            "client_x509_cert_url": st.secrets["GCP_CLIENT_X509_CERT_URL"],
+            "universe_domain": st.secrets.get("GCP_UNIVERSE_DOMAIN", "googleapis.com")
+        }
         creds = service_account.Credentials.from_service_account_info(
-            json.loads(sa_json),
+            service_account_info,
             scopes=config['scopes']
         )
     # Try structured secrets format
     elif "gcp_service_account" in st.secrets:
         creds = service_account.Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
+            scopes=config['scopes']
+        )
+    # Try base64 encoded JSON format
+    elif "GOOGLE_SERVICE_ACCOUNT_B64" in st.secrets:
+        sa_b64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_B64"]
+        sa_json = base64.b64decode(sa_b64).decode('utf-8')
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(sa_json),
             scopes=config['scopes']
         )
     # Fallback to old formats
