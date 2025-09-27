@@ -15,15 +15,21 @@ def get_google_client():
     """Initialize and return Google Sheets client."""
     config = get_spreadsheet_config()
 
-    sa_json = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    sa_file = st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON_FILE", "")
-
-    if sa_json:
+    # Try new format first (structured secrets)
+    if "gcp_service_account" in st.secrets:
+        creds = service_account.Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=config['scopes']
+        )
+    # Fallback to old formats
+    elif "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
+        sa_json = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
         creds = service_account.Credentials.from_service_account_info(
             json.loads(sa_json),
             scopes=config['scopes']
         )
-    elif sa_file:
+    elif "GOOGLE_SERVICE_ACCOUNT_JSON_FILE" in st.secrets:
+        sa_file = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON_FILE"]
         creds = service_account.Credentials.from_service_account_file(
             sa_file,
             scopes=config['scopes']
