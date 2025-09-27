@@ -1,4 +1,5 @@
 import json
+import base64
 import streamlit as st
 import gspread
 from google.oauth2 import service_account
@@ -15,8 +16,16 @@ def get_google_client():
     """Initialize and return Google Sheets client."""
     config = get_spreadsheet_config()
 
-    # Try new format first (structured secrets)
-    if "gcp_service_account" in st.secrets:
+    # Try base64 encoded JSON format (most reliable for Streamlit Cloud)
+    if "GOOGLE_SERVICE_ACCOUNT_B64" in st.secrets:
+        sa_b64 = st.secrets["GOOGLE_SERVICE_ACCOUNT_B64"]
+        sa_json = base64.b64decode(sa_b64).decode('utf-8')
+        creds = service_account.Credentials.from_service_account_info(
+            json.loads(sa_json),
+            scopes=config['scopes']
+        )
+    # Try structured secrets format
+    elif "gcp_service_account" in st.secrets:
         creds = service_account.Credentials.from_service_account_info(
             dict(st.secrets["gcp_service_account"]),
             scopes=config['scopes']
