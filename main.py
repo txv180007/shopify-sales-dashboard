@@ -926,6 +926,358 @@ def render_stale_inventory_tab(filtered_df: pd.DataFrame):
         create_download_buttons(stale_display, "stale_inventory", "stale")
 
 
+def render_shopping_list_tab(df: pd.DataFrame):
+    """Render the mobile-optimized shopping list tab."""
+    from data_loader import PinnedShoppingListManager
+
+    # Mobile-optimized CSS
+    st.markdown("""
+        <style>
+        /* Shopping List Mobile Styles */
+        .shopping-list-item {
+            padding: 1rem;
+            margin: 0.5rem 0;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .shopping-list-item.checked {
+            opacity: 0.6;
+            background: #f5f5f5;
+        }
+        .item-name {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+        .item-name.checked {
+            text-decoration: line-through;
+            color: #888;
+        }
+        .item-details {
+            font-size: 0.85rem;
+            color: #666;
+            margin-top: 0.25rem;
+        }
+        .search-box {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: white;
+            padding: 1rem 0;
+            margin-bottom: 1rem;
+        }
+        .action-buttons {
+            display: flex;
+            gap: 0.5rem;
+            margin: 1rem 0;
+        }
+        /* Make buttons full width on mobile */
+        @media (max-width: 768px) {
+            .action-buttons {
+                flex-direction: column;
+            }
+            div[data-testid="stButton"] > button {
+                width: 100%;
+            }
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title("🛒 My Shopping List")
+
+    pinned_mgr = PinnedShoppingListManager()
+
+    # Search and Add Section
+    st.markdown("<div class='search-box'>", unsafe_allow_html=True)
+
+    search_col1, search_col2 = st.columns([3, 1])
+
+    with search_col1:
+        search_query = st.text_input(
+            "Search or scan barcode",
+            placeholder="Type product name or barcode...",
+            key="shopping_search",
+            label_visibility="collapsed"
+        )
+
+    with search_col2:
+        use_camera = st.toggle("📷", key="use_camera", help="Scan barcode with camera")
+
+    # Camera input for barcode scanning
+    if use_camera:
+        st.info("📸 Point camera at barcode and capture")
+        camera_input = st.camera_input("Scan barcode", key="barcode_camera")
+
+        if camera_input:
+            try:
+                from PIL import Image
+                from pyzbar.pyzbar import decode
+                import cv2
+                import numpy as np
+
+                # Read the image
+                image = Image.open(camera_input)
+
+                # Convert PIL image to OpenCV format for better processing
+                img_array = np.array(image)
+
+                # Convert to grayscale for better barcode detection
+                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+
+                # Try multiple preprocessing techniques for better detection
+                barcodes = []
+
+                # Try 1: Original grayscale
+                barcodes = decode(gray)
+
+                # Try 2: If no barcode found, try with adaptive thresholding
+                if not barcodes:
+                    adaptive = cv2.adaptiveThreshold(
+                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                    )
+                    barcodes = decode(adaptive)
+
+                # Try 3: If still no barcode, try with simple thresholding
+                if not barcodes:
+                    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+                    barcodes = decode(thresh)
+
+                # Try 4: Original color image as fallback
+                if not barcodes:
+                    barcodes = decode(img_array)
+
+                if barcodes:
+                    # Get the first barcode found
+                    barcode_data = barcodes[0].data.decode('utf-8')
+                    barcode_type = barcodes[0].type
+
+                    st.success(f"✅ Barcode detected: {barcode_data} ({barcode_type})")
+
+                    # Auto-fill search with the detected barcode
+                    st.session_state["shopping_search"] = barcode_data
+
+                    # Show the detected area on the image
+                    points = barcodes[0].polygon
+                    if len(points) == 4:
+                        pts = np.array([[p.x, p.y] for p in points], dtype=np.int32)
+                        cv2.polylines(img_array, [pts], True, (0, 255, 0), 3)
+
+                    # Display the image with detection box
+                    st.image(img_array, caption="Detected barcode area (green outline)", use_container_width=True)
+
+                    # Trigger search
+                    search_query = barcode_data
+
+                else:
+                    st.error("❌ No barcode detected. Please ensure:")
+                    st.markdown("""
+                    - The barcode is well-lit
+                    - The barcode is in focus
+                    - The entire barcode is visible in the frame
+                    - Try holding the camera steady
+                    """)
+                    st.image(image, caption="Captured image", use_container_width=True)
+
+            except ImportError as e:
+                st.error("⚠️ Barcode scanning libraries not installed. Please install:")
+                st.code("pip install pyzbar Pillow opencv-python-headless")
+                st.info("Or type the barcode manually in the search box above.")
+            except Exception as e:
+                st.error(f"❌ Error processing image: {str(e)}")
+                st.info("Please try again or type the barcode manually.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Search functionality
+    if search_query:
+        search_lower = search_query.lower()
+
+        # Search in current data
+        matches = df[
+            (df["title"].astype(str).str.lower().str.contains(search_lower, na=False)) |
+            (df["barcode"].astype(str).str.lower().str.contains(search_lower, na=False))
+        ]
+
+        if not matches.empty:
+            st.success(f"Found {len(matches)} product(s) in inventory")
+
+            # Show matches
+            for idx, row in matches.head(10).iterrows():
+                product_name = row.get("title", "Unknown")
+                barcode = row.get("barcode", "")
+                sku = row.get("sku", "")
+
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.write(f"**{product_name}**")
+                    if barcode:
+                        st.caption(f"Barcode: {barcode}")
+                with col2:
+                    if st.button("➕ Add", key=f"add_{idx}"):
+                        pinned_mgr.pin_item(product_name, barcode, sku)
+                        st.success(f"Added to list!")
+                        st.rerun()
+        else:
+            # Check stale inventory
+            st.warning("Not found in current inventory. Checking stale inventory...")
+            stale_matches = df[df["title"].astype(str).str.lower().str.contains(search_lower, na=False)]
+
+            if not stale_matches.empty:
+                st.info("Found in historical data (may be out of stock)")
+                for idx, row in stale_matches.head(5).iterrows():
+                    product_name = row.get("title", "Unknown")
+                    barcode = row.get("barcode", "")
+                    sku = row.get("sku", "")
+
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.write(f"**{product_name}**")
+                        st.caption("⚠️ May be out of stock")
+                    with col2:
+                        if st.button("➕", key=f"add_stale_{idx}"):
+                            pinned_mgr.pin_item(product_name, barcode, sku)
+                            st.success("Added to list!")
+                            st.rerun()
+            else:
+                st.error("Product not found in inventory")
+
+        st.divider()
+
+    # Load shopping list
+    shopping_list = pinned_mgr.list_pinned_items()
+
+    if not shopping_list:
+        st.info("Your shopping list is empty. Search for products above to add them!")
+    else:
+        # Action buttons
+        st.markdown("<div class='action-buttons'>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if st.button("🗑️ Clear Checked", key="clear_checked_btn", use_container_width=True):
+                count = pinned_mgr.clear_checked_items()
+                if count > 0:
+                    st.success(f"Removed {count} checked item(s)")
+                    st.rerun()
+                else:
+                    st.info("No checked items to remove")
+
+        with col2:
+            # Count items
+            total_items = len(shopping_list)
+            checked_items = sum(1 for item in shopping_list if item.get("checked"))
+            st.metric("Progress", f"{checked_items}/{total_items}")
+
+        with col3:
+            if st.button("📋 Export List", key="export_list_btn", use_container_width=True):
+                # Create text export
+                export_text = "Shopping List:\n\n"
+                for item in shopping_list:
+                    status = "☑" if item.get("checked") else "☐"
+                    export_text += f"{status} {item['product']}\n"
+                    if item.get("barcode"):
+                        export_text += f"   Barcode: {item['barcode']}\n"
+                st.download_button(
+                    "Download as TXT",
+                    export_text,
+                    "shopping_list.txt",
+                    "text/plain",
+                    use_container_width=True
+                )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.divider()
+
+        # Display shopping list items
+        st.subheader(f"📝 Your List ({len(shopping_list)} items)")
+
+        # Separate checked and unchecked
+        unchecked_items = [item for item in shopping_list if not item.get("checked")]
+        checked_items_list = [item for item in shopping_list if item.get("checked")]
+
+        # Display unchecked items first
+        for item in unchecked_items:
+            product = item["product"]
+            barcode = item.get("barcode", "")
+            sku = item.get("sku", "")
+
+            st.markdown(f"<div class='shopping-list-item'>", unsafe_allow_html=True)
+
+            col1, col2, col3 = st.columns([1, 6, 1])
+
+            with col1:
+                checked = st.checkbox(
+                    "✓",
+                    value=False,
+                    key=f"check_{product}",
+                    label_visibility="collapsed"
+                )
+                if checked:
+                    pinned_mgr.toggle_checked(product, True)
+                    st.rerun()
+
+            with col2:
+                st.markdown(f"<div class='item-name'>{product}</div>", unsafe_allow_html=True)
+                details = []
+                if barcode:
+                    details.append(f"📊 {barcode}")
+                if sku:
+                    details.append(f"🔖 {sku}")
+                if details:
+                    st.markdown(f"<div class='item-details'>{' | '.join(details)}</div>", unsafe_allow_html=True)
+
+            with col3:
+                if st.button("🗑️", key=f"del_{product}", help="Remove from list"):
+                    pinned_mgr.unpin_item(product)
+                    st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Display checked items
+        if checked_items_list:
+            st.markdown("---")
+            st.caption(f"✅ Checked Items ({len(checked_items_list)})")
+
+            for item in checked_items_list:
+                product = item["product"]
+                barcode = item.get("barcode", "")
+                sku = item.get("sku", "")
+
+                st.markdown(f"<div class='shopping-list-item checked'>", unsafe_allow_html=True)
+
+                col1, col2, col3 = st.columns([1, 6, 1])
+
+                with col1:
+                    checked = st.checkbox(
+                        "✓",
+                        value=True,
+                        key=f"check_{product}",
+                        label_visibility="collapsed"
+                    )
+                    if not checked:
+                        pinned_mgr.toggle_checked(product, False)
+                        st.rerun()
+
+                with col2:
+                    st.markdown(f"<div class='item-name checked'>{product}</div>", unsafe_allow_html=True)
+                    details = []
+                    if barcode:
+                        details.append(f"📊 {barcode}")
+                    if sku:
+                        details.append(f"🔖 {sku}")
+                    if details:
+                        st.markdown(f"<div class='item-details'>{' | '.join(details)}</div>", unsafe_allow_html=True)
+
+                with col3:
+                    if st.button("🗑️", key=f"del_{product}", help="Remove from list"):
+                        pinned_mgr.unpin_item(product)
+                        st.rerun()
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+
 def main():
     """Main application entry point."""
     # Setup
@@ -962,8 +1314,8 @@ def main():
     render_preset_chips()
 
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Dashboard", "📦 Stock Views", "📈 Pareto & Stock-Out", "🧊 Stale Inventory"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "📊 Dashboard", "📦 Stock Views", "📈 Pareto & Stock-Out", "🧊 Stale Inventory", "🛒 My Shopping List"
     ])
 
     with tab1:
@@ -977,6 +1329,9 @@ def main():
 
     with tab4:
         render_stale_inventory_tab(filtered_df)
+
+    with tab5:
+        render_shopping_list_tab(df)
 
 
 if __name__ == "__main__":
