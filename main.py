@@ -1010,65 +1010,37 @@ def render_shopping_list_tab(df: pd.DataFrame):
     """Render the mobile-optimized shopping list tab."""
     from data_loader import PinnedShoppingListManager
 
-    # Mobile-optimized CSS - Compact & Dense
+    # Mobile-optimized CSS
     st.markdown("""
         <style>
-        /* Compact Shopping List Styles */
-        .shopping-list-item {
-            padding: 0.5rem 0.75rem;
-            margin: 0;
-            border-bottom: 1px solid #e0e0e0;
-            background: white;
+        /* Compact buttons */
+        div[data-testid="stButton"] > button {
+            padding: 0.35rem 0.75rem;
+            font-size: 0.9rem;
         }
-        .shopping-list-item:hover {
-            background: #f8f9fa;
+        /* Hide camera label */
+        [data-testid="stCameraInput"] label {
+            display: none;
         }
-        .shopping-list-item.checked {
-            opacity: 0.5;
-            background: #f5f5f5;
+        /* Full width camera */
+        [data-testid="stCameraInput"] {
+            width: 100%;
         }
-        .item-name {
-            font-size: 0.95rem;
-            font-weight: 500;
-            margin: 0;
-            line-height: 1.3;
+        [data-testid="stCameraInput"] video {
+            width: 100% !important;
+            height: 60vh !important;
+            object-fit: cover;
         }
-        .item-name.checked {
-            text-decoration: line-through;
-            color: #888;
-        }
-        .item-details {
-            font-size: 0.75rem;
-            color: #666;
-            margin-top: 0.15rem;
-        }
-        .search-box {
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            background: white;
-            padding: 0.5rem 0;
-            margin-bottom: 0.5rem;
-        }
-        .action-buttons {
-            display: flex;
-            gap: 0.5rem;
-            margin: 0.5rem 0;
-        }
-        /* Compact spacing */
-        [data-testid="stVerticalBlock"] > [style*="flex-direction: column;"] > [data-testid="stVerticalBlock"] {
-            gap: 0;
-        }
-        /* Make buttons compact on mobile */
-        @media (max-width: 768px) {
-            .action-buttons {
-                flex-direction: column;
-            }
-            div[data-testid="stButton"] > button {
-                width: 100%;
-                padding: 0.25rem 0.5rem;
-                font-size: 0.85rem;
-            }
+        /* Barcode guide - green rectangle overlay */
+        .barcode-guide {
+            text-align: center;
+            padding: 1rem;
+            margin: 1rem 0;
+            border: 4px solid #00ff00;
+            border-radius: 12px;
+            background: rgba(0, 255, 0, 0.1);
+            font-weight: bold;
+            color: #00aa00;
         }
         </style>
     """, unsafe_allow_html=True)
@@ -1078,8 +1050,6 @@ def render_shopping_list_tab(df: pd.DataFrame):
     pinned_mgr = PinnedShoppingListManager()
 
     # Search and Add Section
-    st.markdown("<div class='search-box'>", unsafe_allow_html=True)
-
     search_col1, search_col2 = st.columns([3, 1])
 
     with search_col1:
@@ -1103,8 +1073,9 @@ def render_shopping_list_tab(df: pd.DataFrame):
 
     # Camera input for barcode scanning (works on iOS)
     if st.session_state.camera_active:
-        st.info("📸 Point camera at barcode and take a photo")
-        camera_input = st.camera_input("Scan barcode", key="barcode_camera")
+        st.markdown("<div class='barcode-guide'>📸 Center barcode in this green box</div>", unsafe_allow_html=True)
+
+        camera_input = st.camera_input("Scan", key="barcode_camera", label_visibility="collapsed")
 
         if camera_input:
             try:
@@ -1113,37 +1084,39 @@ def render_shopping_list_tab(df: pd.DataFrame):
                 import cv2
                 import numpy as np
 
-                # Read the image
-                image = Image.open(camera_input)
-                img_array = np.array(image)
+                with st.spinner("🔍 Detecting barcode..."):
+                    # Read the image
+                    image = Image.open(camera_input)
+                    img_array = np.array(image)
 
-                # Convert to grayscale
-                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                    # Convert to grayscale
+                    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
 
-                # Apply sharpening
-                kernel = np.array([[-1,-1,-1], [-1, 9,-1], [-1,-1,-1]])
-                sharpened = cv2.filter2D(gray, -1, kernel)
+                    # Apply sharpening for better focus
+                    kernel = np.array([[-1,-1,-1], [-1, 9,-1], [-1,-1,-1]])
+                    sharpened = cv2.filter2D(gray, -1, kernel)
 
-                # Try barcode detection with multiple methods
-                with st.spinner("🔍 Scanning..."):
-                    barcodes = decode(sharpened) or decode(gray) or decode(img_array)
+                    # Enhance contrast
+                    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+                    enhanced = clahe.apply(sharpened)
+
+                    # Try multiple detection methods
+                    barcodes = (decode(enhanced) or decode(sharpened) or
+                               decode(gray) or decode(img_array))
 
                 if barcodes:
                     barcode_data = barcodes[0].data.decode('utf-8')
-                    st.success(f"✅ Barcode: {barcode_data}")
+                    st.success(f"✅ Detected: {barcode_data}")
                     st.session_state["shopping_search"] = barcode_data
                     st.session_state.camera_active = False
                     st.rerun()
                 else:
-                    st.error("❌ No barcode detected. Try again or type manually.")
-                    st.image(image, caption="Captured image", use_container_width=True)
+                    st.warning("⚠️ No barcode found. Ensure barcode is clear, well-lit, and centered.")
 
-            except ImportError:
-                st.error("⚠️ Barcode libraries not installed. Type barcode manually.")
+            except ImportError as e:
+                st.info("📝 Libraries loading... Type barcode manually for now.")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     # Load shopping list early for search filtering
     shopping_list = pinned_mgr.list_pinned_items()
@@ -1231,8 +1204,42 @@ def render_shopping_list_tab(df: pd.DataFrame):
 
         st.divider()
 
-        # Display items - show search results first if searching
-        display_items = filtered_list_items if search_query and filtered_list_items else shopping_list
+        # Enrich shopping list with inventory data
+        enriched_items = []
+        for item in shopping_list:
+            product = item["product"]
+
+            # Find matching product in inventory
+            match = df[df["title"].astype(str).str.lower() == product.lower()]
+
+            if not match.empty:
+                row = match.iloc[0]
+                enriched_items.append({
+                    **item,
+                    "qty_sold": int(row.get("qty", 0)),
+                    "inventory_left": int(row.get("inventoryQuantity", 0)),
+                    "price": float(row.get("itemPrice", 0))
+                })
+            else:
+                # No inventory data available
+                enriched_items.append({
+                    **item,
+                    "qty_sold": 0,
+                    "inventory_left": 0,
+                    "price": 0
+                })
+
+        # Filter display items - enrich filtered items too
+        if search_query and filtered_list_items:
+            # Enrich the filtered items as well
+            enriched_filtered = []
+            for item in filtered_list_items:
+                # Find in already enriched items
+                enriched = next((e for e in enriched_items if e["product"] == item["product"]), item)
+                enriched_filtered.append(enriched)
+            display_items = enriched_filtered
+        else:
+            display_items = enriched_items
 
         # Separate checked and unchecked
         unchecked_items = [item for item in display_items if not st.session_state.checked_items.get(item["product"], False)]
@@ -1241,16 +1248,17 @@ def render_shopping_list_tab(df: pd.DataFrame):
         # Show unchecked items
         if unchecked_items:
             st.caption(f"📝 Active Items ({len(unchecked_items)})")
+
             for item in unchecked_items:
                 product = item["product"]
-                barcode = item.get("barcode", "")
-                sku = item.get("sku", "")
+                qty_sold = item.get("qty_sold", 0)
+                inventory = item.get("inventory_left", 0)
+                price = item.get("price", 0)
 
-                st.markdown(f"<div class='shopping-list-item'>", unsafe_allow_html=True)
-                col1, col2, col3 = st.columns([1, 6, 1])
+                col1, col2, col3, col4 = st.columns([0.5, 4, 2, 0.5])
 
                 with col1:
-                    checked = st.checkbox(
+                    st.checkbox(
                         "✓",
                         value=False,
                         key=f"check_{product}",
@@ -1259,21 +1267,21 @@ def render_shopping_list_tab(df: pd.DataFrame):
                     )
 
                 with col2:
-                    st.markdown(f"<div class='item-name'>{product}</div>", unsafe_allow_html=True)
-                    if barcode or sku:
-                        details = []
-                        if barcode:
-                            details.append(f"📊 {barcode}")
-                        if sku:
-                            details.append(f"🔖 {sku}")
-                        st.markdown(f"<div class='item-details'>{' | '.join(details)}</div>", unsafe_allow_html=True)
+                    st.write(f"**{product}**")
+                    st.caption(f"Sold: {qty_sold} | Stock: {inventory}")
 
                 with col3:
+                    if price > 0:
+                        st.metric("Price", f"${price:.2f}", label_visibility="collapsed")
+                    else:
+                        st.caption("No price")
+
+                with col4:
                     if st.button("🗑️", key=f"del_{product}", help="Remove"):
                         pinned_mgr.unpin_item(product)
                         st.rerun()
 
-                st.markdown("</div>", unsafe_allow_html=True)
+                st.divider()
 
         # Show checked items
         if checked_items_list:
@@ -1281,14 +1289,14 @@ def render_shopping_list_tab(df: pd.DataFrame):
 
             for item in checked_items_list:
                 product = item["product"]
-                barcode = item.get("barcode", "")
-                sku = item.get("sku", "")
+                qty_sold = item.get("qty_sold", 0)
+                inventory = item.get("inventory_left", 0)
+                price = item.get("price", 0)
 
-                st.markdown(f"<div class='shopping-list-item checked'>", unsafe_allow_html=True)
-                col1, col2, col3 = st.columns([1, 6, 1])
+                col1, col2, col3, col4 = st.columns([0.5, 4, 2, 0.5])
 
                 with col1:
-                    checked = st.checkbox(
+                    st.checkbox(
                         "✓",
                         value=True,
                         key=f"check_{product}",
@@ -1297,21 +1305,19 @@ def render_shopping_list_tab(df: pd.DataFrame):
                     )
 
                 with col2:
-                    st.markdown(f"<div class='item-name checked'>{product}</div>", unsafe_allow_html=True)
-                    if barcode or sku:
-                        details = []
-                        if barcode:
-                            details.append(f"📊 {barcode}")
-                        if sku:
-                            details.append(f"🔖 {sku}")
-                        st.markdown(f"<div class='item-details'>{' | '.join(details)}</div>", unsafe_allow_html=True)
+                    st.write(f"~~{product}~~")
+                    st.caption(f"Sold: {qty_sold} | Stock: {inventory}")
 
                 with col3:
+                    if price > 0:
+                        st.caption(f"${price:.2f}")
+
+                with col4:
                     if st.button("🗑️", key=f"del_{product}", help="Remove"):
                         pinned_mgr.unpin_item(product)
                         st.rerun()
 
-                st.markdown("</div>", unsafe_allow_html=True)
+                st.divider()
 
 
 def main():
