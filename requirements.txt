@@ -6,3 +6,6 @@ google-auth==2.32.0
 python-dotenv==1.0.1
 streamlit-authenticator==0.3.2
 streamlit-aggrid==0.3.4.post3
+pyzbar==0.1.9
+Pillow>=10.0.0
+opencv-python-headless>=4.8.0

@@ -171,3 +171,132 @@ class PresetManager:
                 break
 
         self.list_presets.clear()
+
+
+class PinnedShoppingListManager:
+    """Manages pinned shopping list items stored in Google Sheets."""
+
+    def __init__(self):
+        self.config = get_spreadsheet_config()
+        self.sheet_name = st.secrets.get("PINNED_SHOPPING_LIST_SHEET_NAME", "PinnedShoppingList")
+
+    def _ensure_pinned_sheet(self, spreadsheet):
+        """Ensure the pinned shopping list worksheet exists."""
+        try:
+            worksheet = spreadsheet.worksheet(self.sheet_name)
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(
+                self.sheet_name,
+                rows=1000,
+                cols=6
+            )
+            worksheet.update("A1:F1", [["product", "pinnedAt", "barcode", "sku", "checked", "checkedAt"]])
+
+        return worksheet
+
+    @st.cache_data(ttl=CACHE_TTL["presets"])
+    def list_pinned_items(_self) -> List[Dict[str, Any]]:
+        """Return list of pinned shopping list items."""
+        client = get_google_client()
+        spreadsheet = client.open_by_key(_self.config['spreadsheet_id'])
+        worksheet = _self._ensure_pinned_sheet(spreadsheet)
+
+        rows = worksheet.get_all_records()
+        pinned_items = []
+
+        for row in rows:
+            if row.get("product"):
+                pinned_items.append({
+                    "product": row["product"],
+                    "pinnedAt": row.get("pinnedAt", ""),
+                    "barcode": row.get("barcode", ""),
+                    "sku": row.get("sku", ""),
+                    "checked": str(row.get("checked", "")).lower() in ["true", "1", "yes"],
+                    "checkedAt": row.get("checkedAt", "")
+                })
+
+        return pinned_items
+
+    def pin_item(self, product: str, barcode: str = "", sku: str = "") -> None:
+        """Pin a product to the shopping list."""
+        client = get_google_client()
+        spreadsheet = client.open_by_key(self.config['spreadsheet_id'])
+        worksheet = self._ensure_pinned_sheet(spreadsheet)
+
+        rows = worksheet.get_all_records()
+        payload = [
+            product,
+            datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            barcode,
+            sku,
+            "FALSE",  # checked
+            ""        # checkedAt
+        ]
+
+        # Check if already pinned
+        for i, row in enumerate(rows, start=2):  # Header is row 1
+            if row.get("product") == product:
+                # Already pinned, preserve checked state
+                checked = str(row.get("checked", "")).lower() in ["true", "1", "yes"]
+                payload[4] = "TRUE" if checked else "FALSE"
+                payload[5] = row.get("checkedAt", "")
+                worksheet.update(f"A{i}:F{i}", [payload])
+                self.list_pinned_items.clear()
+                return
+
+        # Append new pinned item
+        worksheet.append_row(payload, value_input_option="RAW")
+        self.list_pinned_items.clear()
+
+    def unpin_item(self, product: str) -> None:
+        """Unpin a product from the shopping list."""
+        client = get_google_client()
+        spreadsheet = client.open_by_key(self.config['spreadsheet_id'])
+        worksheet = self._ensure_pinned_sheet(spreadsheet)
+
+        rows = worksheet.get_all_records()
+        for i, row in enumerate(rows, start=2):  # Header is row 1
+            if row.get("product") == product:
+                worksheet.delete_rows(i)
+                break
+
+        self.list_pinned_items.clear()
+
+    def is_pinned(self, product: str) -> bool:
+        """Check if a product is pinned."""
+        pinned = self.list_pinned_items()
+        return any(item["product"] == product for item in pinned)
+
+    def toggle_checked(self, product: str, checked: bool) -> None:
+        """Toggle the checked state of a pinned item."""
+        client = get_google_client()
+        spreadsheet = client.open_by_key(self.config['spreadsheet_id'])
+        worksheet = self._ensure_pinned_sheet(spreadsheet)
+
+        rows = worksheet.get_all_records()
+        for i, row in enumerate(rows, start=2):  # Header is row 1
+            if row.get("product") == product:
+                checked_at = datetime.utcnow().isoformat(timespec="seconds") + "Z" if checked else ""
+                worksheet.update(f"E{i}:F{i}", [["TRUE" if checked else "FALSE", checked_at]])
+                break
+
+        self.list_pinned_items.clear()
+
+    def clear_checked_items(self) -> int:
+        """Remove all checked items from the list. Returns count of items removed."""
+        client = get_google_client()
+        spreadsheet = client.open_by_key(self.config['spreadsheet_id'])
+        worksheet = self._ensure_pinned_sheet(spreadsheet)
+
+        rows = worksheet.get_all_records()
+        count = 0
+        # Delete from bottom to top to avoid index shifting
+        for i in range(len(rows), 0, -1):
+            row = rows[i-1]
+            if str(row.get("checked", "")).lower() in ["true", "1", "yes"]:
+                worksheet.delete_rows(i + 1)  # +1 because header is row 1
+                count += 1
+
+        if count > 0:
+            self.list_pinned_items.clear()
+        return count
