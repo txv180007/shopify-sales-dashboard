@@ -300,3 +300,44 @@ class PinnedShoppingListManager:
         if count > 0:
             self.list_pinned_items.clear()
         return count
+
+    def bulk_pin_items(self, items: List[Dict[str, str]]) -> int:
+        """
+        Bulk pin multiple items to the shopping list.
+
+        Args:
+            items: List of dicts with 'product', 'barcode' (optional), and 'sku' (optional)
+
+        Returns:
+            Number of new items added (doesn't count items that were already pinned)
+        """
+        client = get_google_client()
+        spreadsheet = client.open_by_key(self.config['spreadsheet_id'])
+        worksheet = self._ensure_pinned_sheet(spreadsheet)
+
+        # Get existing items
+        existing_rows = worksheet.get_all_records()
+        existing_products = {row.get("product") for row in existing_rows if row.get("product")}
+
+        # Prepare new items to add
+        new_items = []
+        timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+        for item in items:
+            product = item.get("product", "")
+            if product and product not in existing_products:
+                new_items.append([
+                    product,
+                    timestamp,
+                    item.get("barcode", ""),
+                    item.get("sku", ""),
+                    "FALSE",  # checked
+                    ""        # checkedAt
+                ])
+
+        # Bulk append new items
+        if new_items:
+            worksheet.append_rows(new_items, value_input_option="RAW")
+            self.list_pinned_items.clear()
+
+        return len(new_items)

@@ -695,8 +695,36 @@ def render_stock_views_tab(filtered_df: pd.DataFrame):
     )
 
     # Export options for shopping list
-    with st.expander("📥 Export Shopping List"):
-        create_download_buttons(shopping_list, "shopping_list", "shopping_list")
+    col_export1, col_export2 = st.columns(2)
+
+    with col_export1:
+        with st.expander("📥 Export Shopping List"):
+            create_download_buttons(shopping_list, "shopping_list", "shopping_list")
+
+    with col_export2:
+        from data_loader import PinnedShoppingListManager
+
+        if st.button("📌 Add to My Shopping List", key="export_to_shopping_list", help="Add all items to your mobile shopping list"):
+            pinned_mgr = PinnedShoppingListManager()
+
+            # Convert shopping list to format for bulk_pin_items
+            items_to_pin = []
+            for _, row in shopping_list.iterrows():
+                items_to_pin.append({
+                    "product": row.get("Product", ""),
+                    "barcode": row.get("Barcode", ""),
+                    "sku": row.get("SKU", "")
+                })
+
+            # Bulk pin items
+            count = pinned_mgr.bulk_pin_items(items_to_pin)
+
+            if count > 0:
+                st.success(f"✅ Added {count} new items to My Shopping List! (Duplicates skipped)")
+            else:
+                st.info("ℹ️ All items are already in your shopping list!")
+
+            st.rerun()
 
     st.divider()
 
@@ -716,8 +744,34 @@ def render_stock_views_tab(filtered_df: pd.DataFrame):
     )
 
     # Export options for out of stock
-    with st.expander("📥 Export Out of Stock"):
-        create_download_buttons(oos_items, "out_of_stock", "oos")
+    col_oos1, col_oos2 = st.columns(2)
+
+    with col_oos1:
+        with st.expander("📥 Export Out of Stock"):
+            create_download_buttons(oos_items, "out_of_stock", "oos")
+
+    with col_oos2:
+        if st.button("📌 Add to My Shopping List", key="export_oos_to_shopping_list", help="Add all out of stock items to your mobile shopping list"):
+            pinned_mgr = PinnedShoppingListManager()
+
+            # Convert out of stock to format for bulk_pin_items
+            items_to_pin = []
+            for _, row in oos_items.iterrows():
+                items_to_pin.append({
+                    "product": row.get("Product", ""),
+                    "barcode": row.get("Barcode", ""),
+                    "sku": row.get("SKU", "")
+                })
+
+            # Bulk pin items
+            count = pinned_mgr.bulk_pin_items(items_to_pin)
+
+            if count > 0:
+                st.success(f"✅ Added {count} new items to My Shopping List! (Duplicates skipped)")
+            else:
+                st.info("ℹ️ All items are already in your shopping list!")
+
+            st.rerun()
 
     st.divider()
 
@@ -739,8 +793,34 @@ def render_stock_views_tab(filtered_df: pd.DataFrame):
     )
 
     # Export options for low stock
-    with st.expander("📥 Export Low Stock"):
-        create_download_buttons(low_stock_display, "low_stock", "low_stock")
+    col_low1, col_low2 = st.columns(2)
+
+    with col_low1:
+        with st.expander("📥 Export Low Stock"):
+            create_download_buttons(low_stock_display, "low_stock", "low_stock")
+
+    with col_low2:
+        if st.button("📌 Add to My Shopping List", key="export_low_to_shopping_list", help="Add all low stock items to your mobile shopping list"):
+            pinned_mgr = PinnedShoppingListManager()
+
+            # Convert low stock to format for bulk_pin_items
+            items_to_pin = []
+            for _, row in low_stock_display.iterrows():
+                items_to_pin.append({
+                    "product": row.get("Product", ""),
+                    "barcode": row.get("Barcode", ""),
+                    "sku": row.get("SKU", "")
+                })
+
+            # Bulk pin items
+            count = pinned_mgr.bulk_pin_items(items_to_pin)
+
+            if count > 0:
+                st.success(f"✅ Added {count} new items to My Shopping List! (Duplicates skipped)")
+            else:
+                st.info("ℹ️ All items are already in your shopping list!")
+
+            st.rerun()
 
     st.divider()
 
@@ -1003,10 +1083,18 @@ def render_shopping_list_tab(df: pd.DataFrame):
         )
 
     with search_col2:
-        use_camera = st.toggle("📷", key="use_camera", help="Scan barcode with camera")
+        scan_button = st.button("📷 Scan", key="scan_barcode_btn", help="Scan barcode with camera", use_container_width=True)
+
+    # Initialize camera state
+    if "camera_active" not in st.session_state:
+        st.session_state.camera_active = False
+
+    # Toggle camera state when button is clicked
+    if scan_button:
+        st.session_state.camera_active = not st.session_state.camera_active
 
     # Camera input for barcode scanning
-    if use_camera:
+    if st.session_state.camera_active:
         st.info("📸 Point camera at barcode and capture")
         camera_input = st.camera_input("Scan barcode", key="barcode_camera")
 
@@ -1026,25 +1114,46 @@ def render_shopping_list_tab(df: pd.DataFrame):
                 # Convert to grayscale for better barcode detection
                 gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
 
+                # Apply sharpening to improve focus (simulates autofocus)
+                kernel = np.array([[-1,-1,-1],
+                                   [-1, 9,-1],
+                                   [-1,-1,-1]])
+                sharpened = cv2.filter2D(gray, -1, kernel)
+
                 # Try multiple preprocessing techniques for better detection
                 barcodes = []
 
-                # Try 1: Original grayscale
-                barcodes = decode(gray)
+                # Try 1: Sharpened grayscale (best for slightly out-of-focus images)
+                barcodes = decode(sharpened)
 
-                # Try 2: If no barcode found, try with adaptive thresholding
+                # Try 2: Original grayscale
+                if not barcodes:
+                    barcodes = decode(gray)
+
+                # Try 3: Adaptive thresholding with sharpening
                 if not barcodes:
                     adaptive = cv2.adaptiveThreshold(
-                        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+                        sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
                     )
                     barcodes = decode(adaptive)
 
-                # Try 3: If still no barcode, try with simple thresholding
+                # Try 4: Increase contrast
+                if not barcodes:
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                    enhanced = clahe.apply(gray)
+                    barcodes = decode(enhanced)
+
+                # Try 5: Simple thresholding
                 if not barcodes:
                     _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
                     barcodes = decode(thresh)
 
-                # Try 4: Original color image as fallback
+                # Try 6: Inverted thresholding (for dark barcodes on light background)
+                if not barcodes:
+                    _, inv_thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+                    barcodes = decode(inv_thresh)
+
+                # Try 7: Original color image as fallback
                 if not barcodes:
                     barcodes = decode(img_array)
 
